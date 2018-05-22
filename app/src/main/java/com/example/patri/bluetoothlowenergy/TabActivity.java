@@ -83,7 +83,7 @@ public class TabActivity extends AppCompatActivity {
         seekBar.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
             @Override
             public void onProgressChanged(SeekBar seekBar, int progress, boolean fromUser) {
-                Log.d("seekbar", "changed");
+                Log.d("seekbar", "changed: " + progress);
             }
 
             @Override
@@ -130,7 +130,7 @@ public class TabActivity extends AppCompatActivity {
                     Log.e("onRequestPermissionResult","permission was granted");
 
                     // start scanning for devices
-                    scanLeDevice(true);
+                    SetUpBLE();
                 } else {
                     Log.e("onRequestPermissionResult","permission was not granted...");
                 }
