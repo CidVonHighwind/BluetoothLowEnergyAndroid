@@ -1,12 +1,16 @@
 package com.example.patri.bluetoothlowenergy;
 
 import android.Manifest;
+import android.app.Activity;
+import android.app.Application;
 import android.bluetooth.BluetoothAdapter;
 import android.bluetooth.BluetoothDevice;
 import android.bluetooth.BluetoothGatt;
 import android.bluetooth.BluetoothGattCallback;
 import android.bluetooth.BluetoothGattCharacteristic;
+import android.bluetooth.BluetoothGattDescriptor;
 import android.bluetooth.BluetoothManager;
+import android.bluetooth.BluetoothProfile;
 import android.bluetooth.le.BluetoothLeScanner;
 import android.bluetooth.le.ScanCallback;
 import android.bluetooth.le.ScanFilter;
@@ -16,6 +20,7 @@ import android.content.Context;
 import android.content.pm.PackageManager;
 import android.net.Uri;
 import android.os.Handler;
+import android.os.Looper;
 import android.os.Parcel;
 import android.os.ParcelUuid;
 import android.support.design.widget.FloatingActionButton;
@@ -46,6 +51,7 @@ import org.w3c.dom.Text;
 import java.io.Console;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.UUID;
 
 public class TabActivity extends AppCompatActivity {
 
@@ -53,12 +59,14 @@ public class TabActivity extends AppCompatActivity {
     private BluetoothAdapter mBluetoothAdapter;
     private Handler mHandler = new Handler();
 
+    private BluetoothGatt mBluetoothGatt, mBluetoothGattFan;
+
     private boolean mScanning;
 
     private Context context;
 
     // Stops scanning after 10 seconds.
-    private static final long SCAN_PERIOD = 10000;
+    private static final long SCAN_PERIOD = 1000000;
     private static final int MY_PERMISSIONS_REQUEST_ACCESS_FINE_LOCATION = 1234;
 
     /**
@@ -68,6 +76,33 @@ public class TabActivity extends AppCompatActivity {
 
     private TextView textViewTemperature, textViewHumidity;
     private SeekBar seekBar;
+
+    private float tempValue, humValue;
+
+    private Handler refresh;
+
+    UUID weatherUUID = UUID.fromString("00000002-0000-0000-FDFD-FDFDFDFDFDFD");
+    UUID tempUUID = UUID.fromString("00002A1C-0000-1000-8000-00805F9B34FB");
+    UUID humUUID = UUID.fromString("00002A6F-0000-1000-8000-00805F9B34FB");
+    UUID notificationUUID = UUID.fromString("00002902-0000-1000-8000-00805F9B34FB");
+    UUID fanUUID = UUID.fromString("00000001-0000-0000-FDFD-FDFDFDFDFDFD");
+    UUID intensityUUID = UUID.fromString("10000001-0000-0000-FDFD-FDFDFDFDFDFD");
+
+    List<BluetoothGattCharacteristic> bufferList = new ArrayList<BluetoothGattCharacteristic>();
+
+    @Override
+    protected void onDestroy() {
+        super.onDestroy();
+
+        if (mBluetoothGatt != null) {
+            mBluetoothGatt.disconnect();
+            Log.d("onDestroy", "disconnect weather");
+        }
+        if (mBluetoothGattFan != null) {
+            mBluetoothGattFan.disconnect();
+            Log.d("onDestroy", "disconnect fan");
+        }
+    }
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -84,6 +119,7 @@ public class TabActivity extends AppCompatActivity {
             @Override
             public void onProgressChanged(SeekBar seekBar, int progress, boolean fromUser) {
                 Log.d("seekbar", "changed: " + progress);
+                WriteFan((int) (progress / 100f * 65535));
             }
 
             @Override
@@ -96,6 +132,8 @@ public class TabActivity extends AppCompatActivity {
                 Log.d("seekbar", "stopped");
             }
         });
+
+        refresh = new Handler(Looper.getMainLooper());
 
         // Use this check to determine whether BLE is supported on the device. Then
         // you can selectively disable BLE-related features.
@@ -127,12 +165,12 @@ public class TabActivity extends AppCompatActivity {
             case MY_PERMISSIONS_REQUEST_ACCESS_FINE_LOCATION: {
                 // If request is cancelled, the result arrays are empty.
                 if (grantResults.length > 0 && grantResults[0] == PackageManager.PERMISSION_GRANTED) {
-                    Log.e("onRequestPermissionResult","permission was granted");
+                    Log.e("onRequestPermissionResult", "permission was granted");
 
                     // start scanning for devices
                     SetUpBLE();
                 } else {
-                    Log.e("onRequestPermissionResult","permission was not granted...");
+                    Log.e("onRequestPermissionResult", "permission was not granted...");
                 }
                 return;
             }
@@ -149,35 +187,196 @@ public class TabActivity extends AppCompatActivity {
         scanLeDevice(true);
     }
 
+    private void UpdateUI() {
+        textViewTemperature.setText(tempValue + "°C");
+        textViewHumidity.setText(humValue + "°%");
+    }
+
+    private boolean lastValueRead;
+
     private BluetoothGattCallback mLeGattCallback = new BluetoothGattCallback() {
 
         @Override
         public void onCharacteristicChanged(BluetoothGatt gatt,
-                                            BluetoothGattCharacteristic characteristic){
+                                            BluetoothGattCharacteristic characteristic) {
 
-            Log.d("onCharacteristicChanged", gatt.toString());
-            Log.d("onCharacteristicChanged", characteristic.toString());
+            Log.d("onCharacteristicChanged", characteristic.getUuid().toString());
+
+            // gatt.readCharacteristic(characteristic);
+
+            bufferList.add(characteristic);
+            if (bufferList.size() == 1)
+                gatt.readCharacteristic(bufferList.get(0));
         }
 
         @Override
         public void onCharacteristicRead(BluetoothGatt gatt,
-                                         BluetoothGattCharacteristic characteristic, int status){
+                                         BluetoothGattCharacteristic characteristic, int status) {
 
             Log.d("onCharacteristicRead", characteristic.toString());
+            Log.d("onCharacteristicRead", characteristic.getUuid().toString());
+            if (characteristic.getUuid().equals(tempUUID)) {
+                int tempInt = characteristic.getIntValue(BluetoothGattCharacteristic.FORMAT_UINT16, 1);
+                tempValue = tempInt / 100f;
+                Log.d("onCharacteristicRead", "temp: " + tempInt);
+            }
+
+            if (characteristic.getUuid().equals(humUUID)) {
+                int humInt = characteristic.getIntValue(BluetoothGattCharacteristic.FORMAT_UINT16, 0);
+                humValue = humInt / 100f;
+                Log.d("onCharacteristicRead", "hum: " + humInt);
+            }
+
+            // update the ui values
+            refresh.post(new Runnable() {
+                public void run() {
+                    UpdateUI();
+                }
+            });
+
+            if (bufferList.size() > 0) {
+                bufferList.remove(0);
+                if (bufferList.size() > 0)
+                    gatt.readCharacteristic(bufferList.get(0));
+            }
+        }
+
+        @Override
+        public void onConnectionStateChange(BluetoothGatt gatt, int status, int newState) {
+
+            Log.d("onConnectionStateChange", "status: " + status + " newState: " + newState);
+
+            if (newState == BluetoothProfile.STATE_CONNECTED) {
+                Log.d("onConnectionStateChange", "connected");
+
+                mBluetoothGatt.discoverServices();
+            }
+        }
+
+        @Override
+        public void onServicesDiscovered(BluetoothGatt gatt, int status) {
+
+            Log.d("onServicesDiscovered", gatt + " status: " + status);
+
+
+            BluetoothGattCharacteristic tempCharacteristic = gatt.getService(weatherUUID).getCharacteristic(tempUUID);
+
+            BluetoothGattDescriptor descriptor = tempCharacteristic.getDescriptor(notificationUUID);
+            descriptor.setValue(BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE);
+            gatt.setCharacteristicNotification(tempCharacteristic, true);
+            gatt.writeDescriptor(descriptor);
+        }
+
+        BluetoothGattCharacteristic humCharacteristic;
+
+        @Override
+        public void onDescriptorWrite(BluetoothGatt gatt, BluetoothGattDescriptor descriptor, int status) {
+
+            Log.d("onCharacteristicWrite", "write");
+
+            if (humCharacteristic == null) {
+                humCharacteristic = gatt.getService(weatherUUID).getCharacteristic(humUUID);
+
+                BluetoothGattDescriptor descriptorTwo = humCharacteristic.getDescriptor(notificationUUID);
+                descriptorTwo.setValue(BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE);
+                gatt.setCharacteristicNotification(humCharacteristic, true);
+                gatt.writeDescriptor(descriptorTwo);
+            } else {
+                refresh.post(new Runnable() {
+                    public void run() {
+                        Toast toast = Toast.makeText(context, "weather connected", Toast.LENGTH_SHORT);
+                        toast.show();
+                    }
+                });
+            }
         }
     };
 
+    private BluetoothGattCallback mLeGattFanCallback = new BluetoothGattCallback() {
+
+        @Override
+        public void onCharacteristicChanged(BluetoothGatt gatt,
+                                            BluetoothGattCharacteristic characteristic) {
+            Log.d("onCharacteristicChanged", characteristic.getUuid().toString());
+        }
+
+        @Override
+        public void onCharacteristicRead(BluetoothGatt gatt,
+                                         BluetoothGattCharacteristic characteristic, int status) {
+
+            Log.d("onCharacteristicRead", characteristic.toString());
+            Log.d("onCharacteristicRead", characteristic.getUuid().toString());
+
+        }
+
+        @Override
+        public void onCharacteristicWrite(BluetoothGatt gatt, BluetoothGattCharacteristic characteristic, int status) {
+
+        }
+
+        @Override
+        public void onConnectionStateChange(BluetoothGatt gatt, int status, int newState) {
+
+            Log.d("onConnectionStateChange", "status: " + status + " newState: " + newState);
+
+            if (newState == BluetoothProfile.STATE_CONNECTED) {
+                Log.d("onConnectionStateChangeFan", "connected");
+
+                mBluetoothGattFan.discoverServices();
+            }
+        }
+
+        @Override
+        public void onServicesDiscovered(BluetoothGatt gatt, int status) {
+
+            Log.d("onServicesDiscoveredFan", gatt + " status: " + status);
+
+            BluetoothGattCharacteristic fanCharacteristic = gatt.getService(fanUUID).getCharacteristic(intensityUUID);
+            gatt.setCharacteristicNotification(fanCharacteristic, true);
+
+            refresh.post(new Runnable() {
+                public void run() {
+                    Toast toast = Toast.makeText(context, "fan connected", Toast.LENGTH_SHORT);
+                    toast.show();
+                }
+            });
+        }
+    };
+
+    private void WriteFan(int strength) {
+        if (mBluetoothGattFan == null)
+            return;
+
+        BluetoothGattCharacteristic fanCharacteristic = mBluetoothGattFan.getService(fanUUID).getCharacteristic(intensityUUID);
+        fanCharacteristic.setValue(strength, BluetoothGattCharacteristic.FORMAT_UINT16, 0);
+
+        mBluetoothGattFan.writeCharacteristic(fanCharacteristic);
+    }
+
     private ScanCallback mLeScanCallback = new ScanCallback() {
         @Override
-        public void onScanResult(int callbackType, ScanResult result) {
+        public synchronized void onScanResult(int callbackType, ScanResult result) {
             Log.d("scanresults", result.toString());
 
-            result.getDevice().connectGatt(context, true, mLeGattCallback);
+            if (mBluetoothGatt == null && result.getDevice().getName().equals("IPVSWeather")) {
+                mBluetoothGatt = result.getDevice().connectGatt(context, false, mLeGattCallback);
+                Log.d("scanresults", "connect to weather");
+            } else if (mBluetoothGattFan == null && result.getDevice().getName().equals("IPVS-LIGHT")) {
+                mBluetoothGattFan = result.getDevice().connectGatt(context, false, mLeGattFanCallback);
+                Log.d("scanresults", "connect to light");
+            }
+
+            try {
+                Thread.sleep(500);
+            } catch (InterruptedException e) {
+                e.printStackTrace();
+            }
 
             super.onScanResult(callbackType, result);
 
-            // stop scanning
-            scanLeDevice(false);
+            //stop scanning
+            if (mBluetoothGatt != null && mBluetoothGattFan != null)
+                scanLeDevice(false);
         }
 
         @Override
@@ -212,18 +411,23 @@ public class TabActivity extends AppCompatActivity {
             mScanning = true;
 
             // create filters for the scan
-            ScanFilter scanFilter = new ScanFilter.Builder()
-                    .setServiceUuid(ParcelUuid.fromString("0000feb8-0000-1000-8000-00805f9b34fb")).build();
+            ScanFilter scanFilterOne = new ScanFilter.Builder()
+                    .setDeviceName("IPVSWeather").build();
+            ScanFilter scanFilterTwo = new ScanFilter.Builder()
+                    .setDeviceName("IPVS-LIGHT").build();
+            // .setServiceUuid(ParcelUuid.fromString("00000002-0000-0000-FDFD-FDFDFDFDFDFD"))
 
             List<ScanFilter> scanFilterList = new ArrayList<ScanFilter>();
-            scanFilterList.add(scanFilter);
+            scanFilterList.add(scanFilterTwo);
+            scanFilterList.add(scanFilterOne);
 
             // create the settings for the scan
             ScanSettings.Builder settingsBuilder = new ScanSettings.Builder();
-            settingsBuilder.setScanMode(ScanSettings.SCAN_MODE_LOW_POWER);
+            settingsBuilder.setScanMode(ScanSettings.SCAN_MODE_LOW_LATENCY);
             settingsBuilder.setCallbackType(ScanSettings.CALLBACK_TYPE_ALL_MATCHES);
 
             bleScanner.startScan(scanFilterList, settingsBuilder.build(), mLeScanCallback);
+            //bleScanner.startScan(mLeScanCallback);
         } else {
             mScanning = false;
             bleScanner.stopScan(mLeScanCallback);
